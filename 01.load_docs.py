@@ -3,41 +3,72 @@
 
 # COMMAND ----------
 
-from pyspark.sql.functions import concat
-from pyspark.sql import functions as F
-
 df = (
-    spark.read.format("csv")
-    .option("delimiter", ",")
-    .option("inferSchema", "true")
-    .option("header", "true")
+    spark.readStream.format("cloudFiles")
+    .option("cloudFiles.format", "text")
+    .option("wholeText", "True")
     .load(config["all"]["staging_loc"])
-    .drop("poster_path", "backdrop_path", "recommendations")
 )
-txt_lst = ["title", "genres", "overview", "credits", "keywords"]
 
-df = df.withColumn("corpus", concat_ws('-', *txt_lst))
-
-# COMMAND ----------
-
-from pyspark.sql.functions import pandas_udf
-import pandas as pd
-from transformers import AutoTokenizer
-max_length = 128
-tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
-
-
-@pandas_udf("long")
-def num_tokens_mpt7b(s: pd.Series) -> pd.Series:
-  return s.apply(lambda str: len(tokenizer.encode(str)))
+(
+    df.writeStream.format("delta")
+    .outputMode("append")
+    .option("checkpointLocation", config["all"]["base_loc"] + "/checkpoint/bronze")
+    .toTable("raw_data")
+)
 
 # COMMAND ----------
 
-df = df.withColumn("num_tokens_mpt7b", num_tokens_mpt7b("corpus"))
+# df = spark.readStream.table("raw_data")
+df = spark.read.table("raw_data")
 
 # COMMAND ----------
 
-df.write.mode("overwrite").saveAsTable("movies_raw")
+# MAGIC %sql SELECT count (*) from raw_data;
+
+# COMMAND ----------
+
+from langchain.text_splitter import TokenTextSplitter
+from pyspark.sql import functions as F
+from pyspark.sql import types as T
+
+@udf('array<string>')
+def get_chunks(text):
+  # instantiate tokenization utilities
+  text_splitter = TokenTextSplitter(chunk_size=1000, chunk_overlap=50)
+  # split text into chunks
+  return text_splitter.split_text(text)
+
+
+# split text into chunks
+df_chunked = (
+  df
+    .withColumn('chunks', get_chunks('value')) # divide text into chunks
+    .drop('value')
+    .withColumn('chunk', F.expr("explode(chunks)"))
+    .drop('chunks')
+    .withColumnRenamed('chunk','text')
+    .withColumn("idx", F.monotonically_increasing_id())
+  )
+
+# 
+
+# COMMAND ----------
+
+display(df_chunked)
+
+# COMMAND ----------
+
+df_chunked.write.format("delta").mode("overwrite").option("delta.enableChangeDataFeed", "true").saveAsTable("delta_docs_chunked")
+
+
+# COMMAND ----------
+
+# MAGIC %sql SELECT count(*) FROM delta_docs_chunked;
+
+# COMMAND ----------
+
+# MAGIC %sql SELECT * FROM delta_docs_chunked;
 
 # COMMAND ----------
 

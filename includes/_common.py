@@ -1,11 +1,4 @@
 # Databricks notebook source
-# DBTITLE 1,Dependencies
-# %pip install git+https://github.com/huggingface/transformers@main
-# %pip install -U "accelerate>=0.20.3"
-%pip install pinecone-client
-
-# COMMAND ----------
-
 dbutils.library.restartPython()
 
 # COMMAND ----------
